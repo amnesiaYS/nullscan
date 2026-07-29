@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nullscan"
+version = "0.1.0"
+description = "OSINT reconnaissance toolkit with a nullsec/dedsec flavor"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "nullsec collective" }]
+keywords = ["osint", "recon", "nullsec", "dedsec", "security", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "httpx>=0.25.0",
+    "dnspython>=2.4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "ruff>=0.1.0"]
+
+[project.scripts]
+nullscan = "nullscan.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/nullsec/nullscan"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nullscan*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Network code intentionally swallows broad exceptions and returns empty
+# data; that is the right behaviour for an OSINT tool that must keep
+# running even when a single API call fails.
+ignore = ["BLE001", "S110", "SIM201"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
