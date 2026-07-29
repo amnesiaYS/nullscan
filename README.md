@@ -6,7 +6,7 @@ Themed nullsec/dedsec. JSON output for piping.
 ## Install
 
 ```bash
-git clone https://github.com/adam20p/nullscan
+git clone https://github.com/amnesiaYS/nullscan
 cd nullscan
 python3 -m venv .venv
 . .venv/bin/activate
