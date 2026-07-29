@@ -85,10 +85,15 @@ def test_banner_renders():
     from rich.console import Console
 
     from nullscan import __version__
+    from nullscan.theme import make_console
 
-    console = Console(record=True, force_terminal=False)
+    console = make_console(file=None)  # default theme
+    # render_banner writes via console.print which goes to stdout in tests
     banner.render_banner(console, __version__)
-    output = console.export_text().lower()
+    # Use a record buffer to capture text.
+    capture = Console(record=True, force_terminal=False, width=120)
+    banner.render_banner(capture, __version__)
+    output = capture.export_text().lower()
     assert "nullsec" in output, "expected 'nullsec' in banner version line"
     assert "privacy" in output, "expected tagline in banner"
 

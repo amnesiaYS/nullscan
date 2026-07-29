@@ -15,7 +15,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import typer
 
@@ -23,7 +23,7 @@ from . import __version__
 from .banner import render_banner
 from .config import load_config, main_config_command
 from .output import print_status, stderr_console, stdout_console, write_output
-from .recon import domain, email, ip, leak, username
+from .recon import cert, cidr, domain, email, hash, ip, leak, mac, phone, username
 from .theme import list_themes
 
 
@@ -47,19 +47,21 @@ EXIT_USAGE = 2
 EXIT_INVALID_TARGET = 3
 EXIT_INTERRUPTED = 130
 
-_VALID_FORMATS = ("table", "json", "markdown")
+_VALID_FORMATS = ("table", "json", "markdown", "csv", "html")
 
-# Shared global options — declared once so subcommands can reuse them and
-# users can pass them either before or after the subcommand name.
-_GLOBAL_OPTS = {
+# Shared global options. Declared as a dict so subcommands reuse the SAME
+# typer.Option objects (otherwise Click treats them as separate options).
+_GLOBAL_OPTS: dict[str, Any] = {
     "no_banner": typer.Option(False, "--no-banner", help="Skip the ASCII banner."),
     "no_color": typer.Option(False, "--no-color", help="Disable ANSI colors."),
-    "format": typer.Option("table", "--format", "-f", help="Output format: table, json, or markdown."),
+    "format": typer.Option("table", "--format", "-f", help="Output format: table, json, markdown, csv, html."),
     "output": typer.Option(None, "--output", "-o", help="Write output to FILE instead of stdout."),
     "concurrency": typer.Option(10, "--concurrency", "-c", help="Max concurrent network requests.", min=1, max=100),
     "quiet": typer.Option(False, "--quiet", "-q", help="Suppress non-essential output."),
     "verbose": typer.Option(False, "--verbose", "-v", help="Show detailed progress."),
     "theme": typer.Option("matrix", "--theme", help=f"Color theme. One of: {', '.join(list_themes())}."),
+    "text": typer.Option(None, "--text", help="(hash only) Hash this string instead of reading a file."),
+    "algorithm": typer.Option("all", "--algorithm", "-a", help="(hash only) Algorithm: md5, sha1, sha256, sha512, sha3_256, sha3_512, or 'all'."),
 }
 
 
@@ -123,7 +125,6 @@ def main(
     rc = _validate(format, theme, err_console)
     if rc is not None:
         raise typer.Exit(code=rc)
-
     ctx.obj = _collect(no_banner, no_color, format, output, concurrency, quiet, verbose, theme)
 
 
@@ -131,6 +132,24 @@ def _get_opts(ctx: typer.Context) -> Opts:
     if isinstance(ctx.obj, Opts):
         return ctx.obj
     return Opts()
+
+
+# ---------------------------------------------------------------------------
+# Wrappers for modules whose scan() takes a list of targets. The dispatcher
+# calls scan_fn with a single target at a time, so we wrap it.
+# ---------------------------------------------------------------------------
+
+
+def _scan_mac_targets(target: str) -> dict[str, Any]:
+    return mac.scan([target])
+
+
+def _scan_phone_targets(target: str) -> dict[str, Any]:
+    return phone.scan([target])
+
+
+def _scan_cidr_targets(target: str) -> dict[str, Any]:
+    return cidr.scan([target])
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +240,100 @@ def leak_cmd(
 ) -> None:
     """Check if one or more passwords appear in known breach corpora."""
     asyncio.run(_multi_scan(_collect(no_banner, no_color, format, output, concurrency, quiet, verbose, theme), "leak", passwords, leak.scan_password, leak.render_password))
+
+
+@app.command(name="hash")
+def hash_cmd(
+    ctx: typer.Context,
+    files: list[Path] = typer.Argument(None, help="File(s) to hash. Omit when using --text."),
+    text: str = typer.Option(None, "--text", help="Hash this string instead of reading from files."),
+    algorithm: str = typer.Option("all", "--algorithm", "-a", help="md5, sha1, sha256, sha512, sha3_256, sha3_512, or 'all'."),
+    no_banner: bool = _GLOBAL_OPTS["no_banner"],
+    no_color: bool = _GLOBAL_OPTS["no_color"],
+    format: str = _GLOBAL_OPTS["format"],
+    output: Path | None = _GLOBAL_OPTS["output"],
+    quiet: bool = _GLOBAL_OPTS["quiet"],
+    theme: str = _GLOBAL_OPTS["theme"],
+) -> None:
+    """Hash one or more files (or a string with --text)."""
+    opts = _collect(no_banner, no_color, format, output, 1, quiet, False, theme)
+    if text is None and not files:
+        print_status(stderr_console(theme=opts.theme, no_color=opts.no_color), "bad", "no input: pass file paths or --text")
+        raise typer.Exit(code=EXIT_USAGE)
+    asyncio.run(_run_hash(opts, files, text, algorithm))
+
+
+@app.command(name="mac")
+def mac_cmd(
+    ctx: typer.Context,
+    addrs: list[str] = typer.Argument(..., help="MAC address(es) in any common format."),
+    no_banner: bool = _GLOBAL_OPTS["no_banner"],
+    no_color: bool = _GLOBAL_OPTS["no_color"],
+    format: str = _GLOBAL_OPTS["format"],
+    output: Path | None = _GLOBAL_OPTS["output"],
+    concurrency: int = _GLOBAL_OPTS["concurrency"],
+    quiet: bool = _GLOBAL_OPTS["quiet"],
+    verbose: bool = _GLOBAL_OPTS["verbose"],
+    theme: str = _GLOBAL_OPTS["theme"],
+) -> None:
+    """Look up vendor for one or more MAC addresses (IEEE OUI database)."""
+    opts = _collect(no_banner, no_color, format, output, concurrency, quiet, verbose, theme)
+    asyncio.run(_multi_scan(opts, "mac", addrs, _scan_mac_targets, mac.render))
+
+
+@app.command(name="phone")
+def phone_cmd(
+    ctx: typer.Context,
+    numbers: list[str] = typer.Argument(..., help="Phone number(s) to validate."),
+    no_banner: bool = _GLOBAL_OPTS["no_banner"],
+    no_color: bool = _GLOBAL_OPTS["no_color"],
+    format: str = _GLOBAL_OPTS["format"],
+    output: Path | None = _GLOBAL_OPTS["output"],
+    concurrency: int = _GLOBAL_OPTS["concurrency"],
+    quiet: bool = _GLOBAL_OPTS["quiet"],
+    verbose: bool = _GLOBAL_OPTS["verbose"],
+    theme: str = _GLOBAL_OPTS["theme"],
+) -> None:
+    """Parse and validate one or more phone numbers (country detection, E.164)."""
+    opts = _collect(no_banner, no_color, format, output, concurrency, quiet, verbose, theme)
+    asyncio.run(_multi_scan(opts, "phone", numbers, _scan_phone_targets, phone.render))
+
+
+@app.command(name="cidr")
+def cidr_cmd(
+    ctx: typer.Context,
+    ranges: list[str] = typer.Argument(..., help="CIDR range(s) (e.g. 192.168.1.0/24)."),
+    no_banner: bool = _GLOBAL_OPTS["no_banner"],
+    no_color: bool = _GLOBAL_OPTS["no_color"],
+    format: str = _GLOBAL_OPTS["format"],
+    output: Path | None = _GLOBAL_OPTS["output"],
+    concurrency: int = _GLOBAL_OPTS["concurrency"],
+    quiet: bool = _GLOBAL_OPTS["quiet"],
+    verbose: bool = _GLOBAL_OPTS["verbose"],
+    theme: str = _GLOBAL_OPTS["theme"],
+) -> None:
+    """Expand one or more CIDR ranges into a list of IPs (capped for safety)."""
+    opts = _collect(no_banner, no_color, format, output, concurrency, quiet, verbose, theme)
+    asyncio.run(_multi_scan(opts, "cidr", ranges, _scan_cidr_targets, cidr.render))
+
+
+@app.command(name="cert")
+def cert_cmd(
+    ctx: typer.Context,
+    hosts: list[str] = typer.Argument(..., help="Hostname(s) (host:port optional, default 443)."),
+    port: int = typer.Option(443, "--port", "-p", help="Default TLS port when not in target."),
+    no_banner: bool = _GLOBAL_OPTS["no_banner"],
+    no_color: bool = _GLOBAL_OPTS["no_color"],
+    format: str = _GLOBAL_OPTS["format"],
+    output: Path | None = _GLOBAL_OPTS["output"],
+    concurrency: int = _GLOBAL_OPTS["concurrency"],
+    quiet: bool = _GLOBAL_OPTS["quiet"],
+    verbose: bool = _GLOBAL_OPTS["verbose"],
+    theme: str = _GLOBAL_OPTS["theme"],
+) -> None:
+    """Inspect TLS certificate(s) for one or more hosts."""
+    opts = _collect(no_banner, no_color, format, output, concurrency, quiet, verbose, theme)
+    asyncio.run(_multi_scan(opts, "cert", hosts, lambda t: cert.scan([t], port=port), cert.render))
 
 
 @config_app.callback(invoke_without_command=True)
@@ -314,7 +427,7 @@ async def _multi_scan(
     async def run_one(target: str) -> tuple[str, Any, Exception | None]:
         async with sem:
             try:
-                return target, await scan_fn(target), None
+                return target, await _call_scan_fn(scan_fn, target), None
             except KeyboardInterrupt:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -330,7 +443,6 @@ async def _multi_scan(
     elapsed = time.monotonic() - started
     failed = sum(1 for _, _, exc in outcomes if exc is not None)
 
-    # Render each target for table format.
     for target, result, exc in outcomes:
         if exc is not None:
             print_status(err_console, "bad", f"{module_name} {target}: {exc}")
@@ -346,8 +458,7 @@ async def _multi_scan(
                 continue
         results.append((target, result, None))
 
-    # Non-table formats: write to stdout (or --output file).
-    if opts.format in ("json", "markdown"):
+    if opts.format in ("json", "markdown", "csv", "html"):
         if len(targets) == 1 and results and results[0][2] is None:
             payload = results[0][1]
         else:
@@ -374,6 +485,49 @@ async def _multi_scan(
 
     if failed == len(outcomes) and len(outcomes) > 0:
         raise typer.Exit(code=EXIT_ERROR)
+
+
+async def _call_scan_fn(scan_fn, target: str) -> Any:
+    """Call a scan function. Some take a single target, others take a list."""
+    result = scan_fn(target)
+    if hasattr(result, "__await__"):
+        return await result
+    return result
+
+
+async def _run_hash(opts: Opts, files: list[Path] | None, text: str | None, algorithm: str) -> None:
+    """Special handler for the hash module (file or string input)."""
+    err_console = stderr_console(theme=opts.theme, no_color=opts.no_color)
+    if not opts.no_banner:
+        render_banner(err_console, __version__, theme_name=opts.theme)
+
+    started = time.monotonic()
+    results: list[dict[str, Any]] = []
+
+    if text is not None:
+        result = hash.scan_text(text, algorithm=algorithm)
+        results.append(result)
+    else:
+        for f in files or []:
+            results.append(hash.scan_file(f, algorithm=algorithm))
+
+    elapsed = time.monotonic() - started
+
+    if opts.format == "table":
+        for r in results:
+            hash.render(r, err_console)
+    elif opts.format in ("json", "markdown", "csv", "html"):
+        payload = results[0] if len(results) == 1 else {"results": results}
+        write_output(
+            opts.output,
+            payload,
+            format=opts.format,
+            target=text if text is not None else ", ".join(str(f) for f in files or []),
+            module="hash",
+        )
+
+    if not opts.quiet:
+        print_status(err_console, "ok", f"scan complete in {elapsed:.2f}s")
 
 
 def main_entry() -> None:
